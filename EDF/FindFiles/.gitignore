@@ -1,11 +1,65 @@
+# Файлы PyInstaller
 *.spec
 build/
 dist/
 *.exe
+
+# Логи и текстовые файлы
 *.log
 *.txt
+
+# Медиафайлы
 *.jpg
 *.mp4
 *.png
-*.iml
+
+# Файлы PyCharm
+.idea/
+
+# Другие временные файлы и папки
 __pycache__/
+../Planner/
+../Study/
+../../Images/
+../../Manage_files/
+../../build/
+../../out/
+../../src/
+../../lib/
+../../logs/
+../../Архив программ/
+../../Литература/
+../../Файлы для обучения/
+
+# Отдельные файлы
+../../1.JPG
+../../2.JPG
+../../3.jpg
+../../4.jpg
+../../blank_clip.mp4
+../../data.pkl
+../../example_image.jpg
+../../ffmpeg-2025-03-13-git-958c46800e-essentials_build/
+../../frame_at_5_seconds.png
+../../get-pip.py
+../../javarush-project.iml
+../../output.png
+../../pixel_transition.mp4
+../../pixel_transition_with_music.mp4
+../../products.xlsx
+../../requirements.txt
+../../segment1.mp4
+../../segment2.mp4
+../../segment3.mp4
+../../segment36TEMP_MPY_wvf_snd.mp3
+../../segment37TEMP_MPY_wvf_snd.mp3
+../../segment_1TEMP_MPY_wvf_snd.mp3
+../../sine_wave.svg
+../../solution.py
+../../solution.spec
+../../test.mp4
+../../test.py
+../../test1.mp4
+../../test2.mp4
+../../video_with_moving_text.mp4
+../../video_with_moving_textTEMP_MPY_wvf_snd.mp3
