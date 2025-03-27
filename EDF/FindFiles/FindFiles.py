@@ -16,16 +16,19 @@ WINDOW_SIZE = "800x500"
 MAIN_SIZE = "450x250"
 ACTION_SIZE = "400x200"
 
-
 class FileSearcher:
     """Класс для поиска файлов и сбора статистики."""
-
     @staticmethod
-    def search_files(source_dir, attributes):
+    def search_files(source_dir, attributes, progress_callback=None):
         start_time = time.time()
         source_path = Path(source_dir)
+        # Исправленный подсчёт общего количества файлов с нужными расширениями
+        total_possible_files = sum(1 for file_path in source_path.rglob('*') if file_path.suffix[1:] in attributes)
+        if progress_callback:
+            progress_callback(0, total_possible_files)  # Устанавливаем начальное значение и максимум
         found_files, file_stats, all_files = {}, {}, []
 
+        processed_files = 0  # Перемещаем счётчик сюда
         for attr in attributes:
             for file_path in source_path.rglob(f'*.{attr}'):
                 parent = file_path.parent
@@ -33,6 +36,9 @@ class FileSearcher:
                 file_stats.setdefault(parent, [0, 0])[0] += 1
                 file_stats[parent][1] += file_path.stat().st_size
                 all_files.append(file_path)
+                processed_files += 1
+                if progress_callback:
+                    progress_callback(processed_files, total_possible_files)  # Обновляем прогресс
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         log_file = source_path / f"log_search_{timestamp}.txt"
@@ -45,10 +51,8 @@ class FileSearcher:
         search_time = time.time() - start_time
         return found_files, file_stats, total_files, total_size, search_time, source_path
 
-
 class Tooltip:
     """Класс для всплывающих подсказок."""
-
     def __init__(self, widget, text):
         self.widget, self.text, self.tooltip = widget, text, None
         widget.bind("<Enter>", self.show)
@@ -66,19 +70,17 @@ class Tooltip:
             self.tooltip.destroy()
             self.tooltip = None
 
-
 class ActionWindow:
     """Класс для окна действий с файлами."""
-
     def __init__(self, parent, selected_folders, found_files, source_root):
         self.window = tk.Toplevel(parent)
         self.window.title("Действия с файлами")
-        self.window.geometry(ACTION_SIZE)
+        self.window.geometry("400x300")
         self.window.configure(bg=BG_COLOR)
         self.selected_folders = selected_folders
         self.found_files = found_files
         self.source_root = source_root
-        self.action_var = tk.StringVar(value="copy")  # Инициализация
+        self.action_var = tk.StringVar(value="copy")
         self.setup_ui()
 
     def setup_ui(self):
@@ -96,14 +98,29 @@ class ActionWindow:
         self.move_radio = tk.Radiobutton(self.window, text="Перенести", variable=self.action_var, value="move",
                                          bg=BG_COLOR, command=lambda: self.action_var.set("move"))
         self.move_radio.pack(anchor='w', padx=10)
+        self.sort_radio = tk.Radiobutton(self.window, text="Распределить по годам", variable=self.action_var,
+                                         value="sort_by_year",
+                                         bg=BG_COLOR, command=self.toggle_month_option)
+        self.sort_radio.pack(anchor='w', padx=10)
 
-        # Устанавливаем начальное значение
+        # Флажок "Учитывать месяц"
+        self.month_var = tk.BooleanVar(value=False)
+        self.month_check = tk.Checkbutton(self.window, text="Учитывать месяц", variable=self.month_var,
+                                          bg=BG_COLOR, state='disabled')
+        self.month_check.pack(anchor='w', padx=20)
+
         self.action_var.set("copy")
         self.copy_radio.select()
         print(f"Initial action: {self.action_var.get()}")
 
         tk.Button(self.window, text="Выполнить", command=self.execute, bg=BUTTON_COLOR, fg="white").pack(pady=10)
+        self.progress = ttk.Progressbar(self.window, length=300, mode='determinate', maximum=100)
+        self.progress.pack(pady=10, fill='x', padx=10)
         self.window.grab_set()
+
+    def toggle_month_option(self):
+        self.action_var.set("sort_by_year")
+        self.month_check.config(state='normal' if self.action_var.get() == "sort_by_year" else 'disabled')
 
     def browse(self):
         folder = filedialog.askdirectory()
@@ -123,65 +140,91 @@ class ActionWindow:
 
         dest_root = Path(dest_dir)
         action = self.action_var.get()
-        print(f"Executing action: {action}")  # Отладочный вывод перед выполнением
+        print(f"Executing action: {action}")
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         log_file = dest_root / f"log_{action}_{timestamp}.txt"
 
+        total_files = sum(len(self.found_files[folder]) for folder in self.selected_folders)
+        self.progress['maximum'] = total_files
+        processed_files = 0
+
         with open(log_file, 'w', encoding='utf-8') as f:
-            f.write(f"Протокол {'копирования' if action == 'copy' else 'переноса'} файлов:\n")
+            if action == "sort_by_year":
+                f.write("Протокол распределения файлов по годам:\n")
+            else:
+                f.write(f"Протокол {'копирования' if action == 'copy' else 'переноса'} файлов:\n")
+
             for folder in self.selected_folders:
                 if folder == self.source_root:
-                    dest_folder = dest_root / self.source_root.name
+                    base_dest_folder = dest_root / self.source_root.name
                 else:
                     relative_path = folder.relative_to(self.source_root)
-                    dest_folder = dest_root / self.source_root.name / relative_path
-                dest_folder.mkdir(parents=True, exist_ok=True)
+                    base_dest_folder = dest_root / self.source_root.name / relative_path
 
                 for file_name in self.found_files[folder]:
                     src_path = folder / file_name
-                    dest_path = dest_folder / file_name
                     try:
-                        if action == "copy":
+                        if action == "sort_by_year":
+                            # Используем время изменения файла (st_mtime) вместо времени создания (st_ctime)
+                            modification_time = datetime.fromtimestamp(src_path.stat().st_mtime)
+                            year = modification_time.strftime("%Y")
+                            if self.month_var.get():
+                                month = modification_time.strftime("%m")
+                                dest_folder = dest_root / year / month
+                            else:
+                                dest_folder = dest_root / year
+                            dest_folder.mkdir(parents=True, exist_ok=True)
+                            dest_path = dest_folder / file_name
+                            shutil.move(src_path, dest_path)  # Перемещаем файл
+                            f.write(f"Перемещено: {src_path} -> {dest_path}\n")
+                        elif action == "copy":
+                            dest_folder = base_dest_folder
+                            dest_folder.mkdir(parents=True, exist_ok=True)
+                            dest_path = dest_folder / file_name
                             shutil.copy2(src_path, dest_path)
                             f.write(f"Скопировано: {src_path} -> {dest_path}\n")
                         elif action == "move":
+                            dest_folder = base_dest_folder
+                            dest_folder.mkdir(parents=True, exist_ok=True)
+                            dest_path = dest_folder / file_name
                             shutil.move(src_path, dest_path)
                             if src_path.exists():
                                 os.remove(src_path)
                                 f.write(f"Удалён исходный файл: {src_path}\n")
                             f.write(f"Перенесено: {src_path} -> {dest_path}\n")
-                        else:
-                            f.write(f"Неизвестное действие: {action}\n")
+
+                        processed_files += 1
+                        self.progress['value'] = processed_files
+                        self.window.update_idletasks()
                     except Exception as e:
                         f.write(f"Ошибка при обработке {src_path}: {e}\n")
-                        if action == "move" and src_path.exists():
+                        if action in ["move", "sort_by_year"] and src_path.exists():
                             try:
                                 os.remove(src_path)
                                 f.write(f"Исходный файл удалён после ошибки: {src_path}\n")
                             except Exception as del_e:
                                 f.write(f"Не удалось удалить исходный файл {src_path}: {del_e}\n")
         messagebox.showinfo("Успех", f"Действие выполнено. Лог сохранён в {log_file}")
+        self.progress['value'] = 0
         self.window.destroy()
-
 
 class ResultsWindow:
     """Класс для окна результатов поиска."""
-
     def __init__(self, found_files, file_stats, total_files, total_size, search_time, source_root, main_root):
-        self.root = tk.Tk()
-        self.root.title("Структура папок с найденными файлами")
-        self.root.geometry(WINDOW_SIZE)
+        self.window = tk.Toplevel(main_root)  # Используем Toplevel вместо Tk()
+        self.window.title("Структура папок с найденными файлами")
+        self.window.geometry(WINDOW_SIZE)
         self.found_files = found_files
         self.file_stats = file_stats
         self.total_files = total_files
         self.total_size = total_size
         self.search_time = search_time
         self.source_root = source_root
-        self.main_root = main_root  # Ссылка на главное окно
+        self.main_root = main_root
         self.checkbox_widgets = {}
-        self.action_window = None  # Ссылка на окно "Действия с файлами"
+        self.action_window = None
         self.setup_ui()
-        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+        self.window.protocol("WM_DELETE_WINDOW", self.on_closing)
 
     def format_size(self, size):
         for unit in ['B', 'KB', 'MB', 'GB']:
@@ -192,9 +235,9 @@ class ResultsWindow:
 
     def setup_ui(self):
         info = f"Всего найдено: {self.total_files} файлов, {self.format_size(self.total_size)} | Время поиска: {self.search_time:.2f} сек"
-        tk.Label(self.root, text=info, bg=BG_COLOR, font=("Arial", 10, "bold")).pack(pady=5)
+        tk.Label(self.window, text=info, bg=BG_COLOR, font=("Arial", 10, "bold")).pack(pady=5)
 
-        paned = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
+        paned = ttk.PanedWindow(self.window, orient=tk.HORIZONTAL)
         paned.pack(fill='both', expand=True)
 
         checkbox_frame = tk.Frame(paned, bg=CHECKBOX_BG)
@@ -206,8 +249,7 @@ class ResultsWindow:
         self.checkbox_canvas.pack(side='left', fill='both', expand=True)
         self.checkbox_canvas.create_window((0, 0), window=self.checkbox_inner, anchor='nw')
 
-        tk.Label(self.checkbox_inner, text="Выбрать папки:", bg=CHECKBOX_BG, font=("Arial", 10, "bold")).pack(
-            anchor='n')
+        tk.Label(self.checkbox_inner, text="Выбрать папки:", bg=CHECKBOX_BG, font=("Arial", 10, "bold")).pack(anchor='n')
         self.add_select_all()
         self.add_checkboxes()
 
@@ -226,7 +268,7 @@ class ResultsWindow:
         paned.add(checkbox_frame, weight=1)
         paned.add(tree_frame, weight=1)
 
-        btn_frame = tk.Frame(self.root, bg=BG_COLOR)
+        btn_frame = tk.Frame(self.window, bg=BG_COLOR)
         btn_frame.pack(side='bottom', fill='x', pady=5)
         tk.Button(btn_frame, text="Действия с файлами", command=self.open_action_window, bg=BUTTON_COLOR,
                   fg="white").pack(side='left', padx=5)
@@ -234,7 +276,8 @@ class ResultsWindow:
             side='left', padx=5)
 
     def show_main_window(self):
-        self.main_root.deiconify()  # Показываем главное окно
+        self.main_root.deiconify()
+        self.window.destroy()
 
     def add_select_all(self):
         self.select_all_chk = ttk.Checkbutton(self.checkbox_inner, text="Выбрать все", command=self.toggle_all)
@@ -245,7 +288,7 @@ class ResultsWindow:
         state = 'selected' if self.select_all_chk.instate(['selected']) else '!selected'
         for folder, widget in self.checkbox_widgets.items():
             widget.state([state])
-        self.root.update_idletasks()
+        self.window.update_idletasks()
 
     def add_checkboxes(self):
         for folder in self.found_files.keys():
@@ -261,7 +304,7 @@ class ResultsWindow:
             Tooltip(chk, str(folder))
 
     def open_action_window(self):
-        self.root.update()
+        self.window.update()
 
         def check_and_open():
             selected = [folder for folder, widget in self.checkbox_widgets.items() if widget.instate(['selected'])]
@@ -269,27 +312,24 @@ class ResultsWindow:
                 messagebox.showerror("Ошибка", "Выберите хотя бы одну папку!")
                 return
             if self.action_window and self.action_window.window.winfo_exists():
-                self.action_window.window.lift()  # Поднимаем окно на передний план
-                self.action_window.window.focus_force()  # Делаем его активным
+                self.action_window.window.lift()
+                self.action_window.window.focus_force()
             else:
-                self.action_window = ActionWindow(self.root, selected, self.found_files, self.source_root)
+                self.action_window = ActionWindow(self.window, selected, self.found_files, self.source_root)
                 self.action_window.window.protocol("WM_DELETE_WINDOW", self.on_action_window_close)
 
-        self.root.after(100, check_and_open)
+        self.window.after(100, check_and_open)
 
     def on_action_window_close(self):
-        """Обработчик закрытия окна 'Действия с файлами'."""
         if self.action_window and self.action_window.window.winfo_exists():
             self.action_window.window.destroy()
         self.action_window = None
 
     def on_closing(self):
-        """Обработчик закрытия окна 'Структура папок'."""
         if self.action_window and self.action_window.window.winfo_exists():
             self.action_window.window.destroy()
-        self.root.destroy()
-        self.main_root.deiconify()  # Показываем главное окно
-        self.main_root.focus_force()  # Делаем его активным
+        self.window.destroy()
+        self.main_root.deiconify()
 
     def populate_tree(self):
         root_node = self.tree.insert("", "end", text="Найденные файлы", open=True)
@@ -298,13 +338,10 @@ class ResultsWindow:
             for file in files:
                 self.tree.insert(folder_node, "end", text=file)
 
-    def run(self):
-        self.root.mainloop()
-
+    # Убрали run(), так как теперь это Toplevel окно
 
 class ExtensionsWindow:
     """Класс для окна выбора расширений."""
-
     def __init__(self, parent, callback):
         self.window = tk.Toplevel(parent)
         self.window.title("Выбор расширений")
@@ -335,7 +372,6 @@ class ExtensionsWindow:
         self.window.grab_set()
 
     def update_entry(self):
-        """Обновляет строку ввода на основе выбранных флажков."""
         selected_exts = []
         for name, var in self.vars.items():
             if var.get():
@@ -344,7 +380,6 @@ class ExtensionsWindow:
         self.ext_entry.insert(0, ', '.join(selected_exts))
 
     def save(self):
-        """Сохраняет только то, что в строке ввода."""
         extensions = [ext.strip() for ext in self.ext_entry.get().split(',') if ext.strip()]
         for ext in extensions:
             if not ext.isalnum():
@@ -356,17 +391,16 @@ class ExtensionsWindow:
         self.callback(extensions)
         self.window.destroy()
 
-
 class MainWindow:
     """Класс для главного окна."""
-
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("Настройки поиска файлов")
         self.root.geometry(MAIN_SIZE)
         self.root.configure(bg=BG_COLOR)
         self.selected_extensions = []
-        self.extensions_window = None  # Ссылка на окно "Выбор расширений"
+        self.extensions_window = None
+        self.results_window = None  # Добавляем ссылку на окно результатов
         self.setup_ui()
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
@@ -377,15 +411,16 @@ class MainWindow:
 
         self.path_entry = tk.Entry(path_frame, width=40)
         self.path_entry.pack(side='left')
-        self.path_entry.insert(0, "C:/Users/User/javarush/3365410/javarush-project/EDF")
+        self.path_entry.insert(0, "C:/")
         tk.Button(path_frame, text="Обзор", command=self.browse, bg=BROWSE_COLOR, fg="white").pack(side='left', padx=5)
 
-        tk.Button(self.root, text="Выбрать расширения", command=self.open_extensions, bg=BROWSE_COLOR, fg="white").pack(
-            pady=10)
+        tk.Button(self.root, text="Выбрать расширения", command=self.open_extensions, bg=BROWSE_COLOR, fg="white").pack(pady=10)
         self.ext_label = tk.Label(self.root, text="Выбраны расширения: (пока не выбраны)", bg=BG_COLOR)
         self.ext_label.pack(pady=5)
 
         tk.Button(self.root, text="Начать поиск", command=self.start_search, bg=BUTTON_COLOR, fg="white").pack(pady=20)
+        self.progress = ttk.Progressbar(self.root, length=300, mode='determinate')
+        self.progress.pack(pady=10)
 
     def browse(self):
         folder = filedialog.askdirectory(initialdir=self.path_entry.get())
@@ -395,14 +430,13 @@ class MainWindow:
 
     def open_extensions(self):
         if self.extensions_window and self.extensions_window.window.winfo_exists():
-            self.extensions_window.window.lift()  # Поднимаем окно на передний план
-            self.extensions_window.window.focus_force()  # Делаем его активным
+            self.extensions_window.window.lift()
+            self.extensions_window.window.focus_force()
         else:
             self.extensions_window = ExtensionsWindow(self.root, self.set_extensions)
             self.extensions_window.window.protocol("WM_DELETE_WINDOW", self.on_extensions_window_close)
 
     def on_extensions_window_close(self):
-        """Обработчик закрытия окна 'Выбор расширений'."""
         if self.extensions_window and self.extensions_window.window.winfo_exists():
             self.extensions_window.window.destroy()
         self.extensions_window = None
@@ -417,22 +451,33 @@ class MainWindow:
             messagebox.showerror("Ошибка", "Укажите существующую папку и выберите расширения!")
             return
 
-        results = FileSearcher.search_files(source_dir, self.selected_extensions)
+        def update_progress(value, maximum):
+            self.progress['maximum'] = maximum
+            self.progress['value'] = value
+            self.root.update_idletasks()
+
+        results = FileSearcher.search_files(source_dir, self.selected_extensions, progress_callback=update_progress)
         if results[0]:
-            self.root.withdraw()  # Скрываем главное окно
-            ResultsWindow(*results, self.root).run()  # Передаём ссылку на главное окно
+            self.progress['value'] = 0  # Сбрасываем прогресс после поиска
+            self.root.withdraw()
+            self.results_window = ResultsWindow(*results, self.root)  # Сохраняем ссылку
         else:
             messagebox.showinfo("Результат", "Файлы с заданными атрибутами не найдены.")
 
     def on_closing(self):
-        """Обработчик закрытия главного окна."""
         if messagebox.askokcancel("Выход", "Вы уверены, что хотите закрыть программу?"):
-            self.root.quit()  # Завершаем весь цикл Tkinter, закрывая все окна
-            self.root.destroy()  # Уничтожаем корневое окно
+            # Закрываем окно результатов, если оно открыто
+            if self.results_window and self.results_window.window.winfo_exists():
+                self.results_window.window.destroy()
+            # Закрываем окно расширений, если оно открыто
+            if self.extensions_window and self.extensions_window.window.winfo_exists():
+                self.extensions_window.window.destroy()
+            # Завершаем программу
+            self.root.quit()
+            self.root.destroy()
 
     def run(self):
         self.root.mainloop()
-
 
 if __name__ == "__main__":
     MainWindow().run()
