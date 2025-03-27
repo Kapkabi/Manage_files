@@ -1,0 +1,11 @@
+*.spec
+build/
+dist/
+*.exe
+*.log
+*.txt
+*.jpg
+*.mp4
+*.png
+*.iml
+__pycache__/
